@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, Image, ActivityIndicator, StyleSheet, TouchableOpacity, Animated, ImageBackground, ScrollView, Modal } from 'react-native';
+import { View, Text, Image, ActivityIndicator, StyleSheet, TouchableOpacity, Animated, ImageBackground, ScrollView, Modal, TextInput } from 'react-native';
 import { db } from './firebaseConfig';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth'; // Para obter o usuário autenticado
 import axios from 'axios'; // Importando o axios
 
@@ -72,6 +72,25 @@ const EventoScreen = ({ route, }) => {
     const [liked, setLiked] = useState(false);  // Estado para o botão de "gostar"
     const [disliked, setDisliked] = useState(false);  // Estado para o botão de "desativado"
     const [modalVisible, setModalVisible] = useState(false);
+    const [modalStep, setModalStep] = useState('payment'); // Estados: 'payment', 'loading', 'success'
+    const [codigoPart1, setCodigoPart1] = useState('');
+    const [codigoPart2, setCodigoPart2] = useState('');
+    const [codigoPart3, setCodigoPart3] = useState('');
+    const [codigoPart4, setCodigoPart4] = useState('');
+    const [emailCodigo, setEmailCodigo] = useState('');
+    const [codigoValido, setCodigoValido] = useState(null); // null para inicializar sem mensagem
+    const [userName, setUserName] = useState('');
+    const [userEmail, setUserEmail] = useState('');
+    const [userPhone, setUserPhone] = useState('');
+    const [userPlano, setUserPlano] = useState('');
+    const [informacoesVisiveis, setInformacoesVisiveis] = useState(false); // Controle da exibição das informações
+    const [userFullName, setUserFullName] = useState('');
+    const [userDataEmissao, setUserDataEmissao] = useState('');
+
+    const refPart1 = useRef(null);
+    const refPart2 = useRef(null);
+    const refPart3 = useRef(null);
+    const refPart4 = useRef(null);
 
     // Animações
     const imageAnim = useRef(new Animated.Value(1)).current; // Animação de opacidade para imagem
@@ -87,9 +106,15 @@ const EventoScreen = ({ route, }) => {
             if (user) {
                 console.log('Email do usuário:', user.email); // Exibe o e-mail no console
 
-                // Busca o nome completo do usuário no Firestore
-                fetchUserFullName(user.uid).then((fullName) => {
-                    console.log('Nome completo do usuário:', fullName); // Exibe o nome completo no console
+                // Busca os dados completos do usuário no Firestore
+                fetchUserDetails(user.uid).then(({ fullName, phone, plano }) => {
+                    console.log('Nome completo do usuário:', fullName);
+                    console.log('Telefone do usuário:', phone);
+                    console.log('Plano do usuário:', plano); // Exibe o plano no console
+                    setUserName(fullName);
+                    setUserEmail(user.email);
+                    setUserPhone(phone);
+                    setUserPlano(plano);
                 });
             } else {
                 console.log('Nenhum usuário autenticado.');
@@ -97,41 +122,133 @@ const EventoScreen = ({ route, }) => {
         }
     }, [eventId]);
 
+    useEffect(() => {
+        const userId = getAuth().currentUser.uid;
+        fetchUserDetails(userId).then(userDetails => {
+            // Verifica se já existe a data de emissão no Firestore
+            if (userDetails.dataEmissao && userDetails.dataEmissao !== 'Data não disponível') {
+                setUserFullName(userDetails.fullName);
+                setUserPhone(userDetails.phone);
+                setUserPlano(userDetails.plano);
+                setUserDataEmissao(userDetails.dataEmissao);
+            } else {
+                // Caso contrário, você pode tratar como não concluído e permitir o processo de pagamento
+                console.log('Dados não encontrados, por favor, finalize a compra');
+            }
+        });
+    }, []);
+
+    useEffect(() => {
+        if (userDataEmissao && userFullName && userPhone && userPlano) {
+            setInformacoesVisiveis(true);
+        }
+    }, [userDataEmissao, userFullName, userPhone, userPlano]);
+
+
+
+    const fetchUserDetails = async (userId) => {
+        try {
+            const userDoc = doc(db, 'users', userId);
+            const userSnap = await getDoc(userDoc);
+            if (userSnap.exists()) {
+                const userData = userSnap.data();
+                const fullName = userData.fullName || 'Nome não disponível';
+                const phone = userData.phone || 'Telefone não disponível';
+                const plano = userData.plano || 'Plano não disponível';
+
+                // Formatar a data de emissão no formato dd/mm/aaaa
+                const dataEmissao = userData.dataEmissao
+                    ? new Date(userData.dataEmissao).toLocaleDateString('pt-BR', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric' // Exibe o ano com 4 dígitos
+                    })
+                    : 'Data não disponível';
+
+                return { fullName, phone, plano, dataEmissao };
+            } else {
+                return { fullName: 'Nome não disponível', phone: 'Telefone não disponível', plano: 'Plano não disponível', dataEmissao: 'Data não disponível' };
+            }
+        } catch (error) {
+            console.error('Erro ao buscar dados do usuário:', error);
+            return { fullName: 'Nome não disponível', phone: 'Telefone não disponível', plano: 'Plano não disponível', dataEmissao: 'Data não disponível' };
+        }
+    };
+
     const handleGarantirTicket = () => {
         setModalVisible(true); // Exibir o modal ao pressionar "Garantir Ticket"
     };
 
     const handlePagar = async () => {
         console.log('Processando pagamento...');
-        setModalVisible(false); // Fechar o modal após clicar em Pagar
+        setModalStep('loading');
 
-        const user = getAuth().currentUser; // Obtém o usuário autenticado
+        const user = getAuth().currentUser;
         if (user) {
-            const eventData = event; // Dados do evento (já carregados do Firestore)
-            const email = user.email; // E-mail do usuário
+            const eventData = event;
+            const email = user.email;
 
             try {
                 const fullName = await fetchUserFullName(user.uid);
-                // Enviar solicitação para o servidor Node.js para enviar o e-mail
-                // troca pelo seu ip
                 const response = await axios.post('http://192.168.15.77:3000/send-email', {
-                    to: email, // E-mail do usuário
-                    subject: `Código do Evento: ${eventData.titulo}`, // Assunto do e-mail
-                    text: `Olá, ${fullName}!\n\nAgradecemos por escolher participar do nosso evento. Estamos felizes em tê-lo conosco!\n\nAqui está o código do evento que você selecionou:\n\nCódigo do Evento: ${eventData.codigo}\n\nPor favor, guarde essa informação com cuidado. Caso precise de mais detalhes ou tenha alguma dúvida, não hesite em entrar em contato com a nossa equipe.\n\nAtenciosamente,\nEquipe PutHype\nTransformando momentos em experiências inesquecíveis.`, // Corpo do e-mail com o nome completo
+                    to: email,
+                    subject: `Código do Evento: ${eventData.titulo}`,
+                    text: `Olá, ${fullName}!\n\nAgradecemos por escolher participar do nosso evento. Estamos felizes em tê-lo conosco!\n\nAqui está o código do evento que você selecionou:\n\nCódigo do Evento: ${eventData.codigo}\n\nPor favor, guarde essa informação com cuidado. Caso precise de mais detalhes ou tenha alguma dúvida, não hesite em entrar em contato com a nossa equipe.\n\nAtenciosamente,\nEquipe PutHype\nTransformando momentos em experiências inesquecíveis.`,
                 });
 
-                // Exibir resposta do servidor, caso o e-mail tenha sido enviado com sucesso
+                setEmailCodigo(eventData.codigo);
                 console.log('E-mail enviado com sucesso!', response.data);
+
+                // Salvar a data de emissão no banco de dados
+                const userRef = doc(db, 'users', user.uid);
+                await updateDoc(userRef, {
+                    dataEmissao: new Date().toISOString()  // Salvando a data atual
+                });
+
+                setModalStep('success');
             } catch (error) {
                 console.error('Erro ao enviar e-mail:', error);
+                setModalStep('payment');
             }
         } else {
             console.log('Usuário não autenticado.');
+            setModalStep('payment');
+        }
+    };
+
+    //codigo
+    useEffect(() => {
+        if (modalVisible) {
+            // Limpar os campos de entrada quando o modal for aberto
+            setCodigoPart1('');
+            setCodigoPart2('');
+            setCodigoPart3('');
+            setCodigoPart4('');
+        }
+    }, [modalVisible]);
+
+    // Função de validação atualizada para fechar o modal e exibir as informações se o código for correto
+    const validateCodigo = () => {
+        const codigo = `${codigoPart1}${codigoPart2}${codigoPart3}${codigoPart4}`;
+        console.log("Código gerado: ", codigo); // Verifique o código gerado
+        if (codigo === emailCodigo) {
+            setCodigoValido(true);
+            setInformacoesVisiveis(true);
+            setModalVisible(false); // Fecha o modal quando o código for válido
+        } else {
+            setCodigoValido(false);
+            setInformacoesVisiveis(false);
         }
     };
 
     const handleCancelar = () => {
-        setModalVisible(false); // Fechar o modal ao clicar em Cancelar
+        setModalVisible(false);
+        setModalStep('payment');
+    };
+
+    // Atualize a função de validação para fechar o modal quando o código for válido
+    const handleSalvar = () => {
+        validateCodigo();  // Chama a função de validação quando o botão "Salvar" for pressionado
     };
 
     // Função para buscar os gostos no Firestore
@@ -156,7 +273,6 @@ const EventoScreen = ({ route, }) => {
             fetchGostos();  // Busca também os gostos
         }
     }, [eventId]);
-
 
     const fetchEvent = async () => {
         try {
@@ -326,6 +442,19 @@ const EventoScreen = ({ route, }) => {
                         </View>
 
                     </View>
+
+                    {/* // View do ticketGarantido, exibindo as informações do usuário */}
+                    <View style={styles.ticketGarantido}>
+                        {informacoesVisiveis && (
+                            <>
+                                <Text style={styles.infoText}>Nome: {userFullName}</Text>
+                                <Text style={styles.infoText}>Telefone: {userPhone}</Text>
+                                <Text style={styles.infoText}>Plano: {userPlano}</Text>
+                                <Text style={styles.infoText}>Data de Emissão: {userDataEmissao}</Text>
+                            </>
+                        )}
+                    </View>
+
                 </ScrollView>
 
                 <View style={styles.containerBotaoBaixo}>
@@ -342,26 +471,98 @@ const EventoScreen = ({ route, }) => {
                 >
                     <View style={styles.modalOverlay}>
                         <View style={styles.modalContainer}>
-                            <Text style={styles.modalText}>
-                                Olá
-                                <Text> Pague o valor de R$ {event.preco} para confirmar sua inscrição e garantir seu ticket.</Text>
-                            </Text>
-                            <View style={styles.modalButtonContainer}>
-                                {/* Botão Pagar */}
-                                <TouchableOpacity
-                                    style={styles.modalButton}
-                                    onPress={handlePagar}
-                                >
-                                    <Text style={styles.modalButtonText}>Pagar</Text>
-                                </TouchableOpacity>
-                                {/* Botão Cancelar */}
-                                <TouchableOpacity
-                                    style={[styles.modalButton, styles.modalCancelButton]}
-                                    onPress={handleCancelar}
-                                >
-                                    <Text style={styles.modalButtonText}>Cancelar</Text>
-                                </TouchableOpacity>
-                            </View>
+                            {modalStep === 'payment' && (
+                                <>
+                                    <Text style={styles.modalText}>
+                                        Pague o valor de R$ {event.preco} para confirmar sua inscrição e garantir seu ticket.
+                                    </Text>
+                                    <View style={styles.modalButtonContainer}>
+                                        <TouchableOpacity
+                                            style={styles.modalButton}
+                                            onPress={handlePagar}
+                                        >
+                                            <Text style={styles.modalButtonText}>Pagar</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            style={[styles.modalButton, styles.modalCancelButton]}
+                                            onPress={handleCancelar}
+                                        >
+                                            <Text style={styles.modalButtonText}>Cancelar</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </>
+                            )}
+                            {modalStep === 'loading' && (
+                                <View style={styles.loadingContainer}>
+                                    <ActivityIndicator size="large" color="#fff" />
+                                    <Text style={styles.loadingText}>Enviando email...</Text>
+                                </View>
+                            )}
+                            {modalStep === 'success' && (
+                                <>
+                                    <Text style={styles.modalText}>Código enviado para o seu email!</Text>
+                                    <View style={styles.codeInputContainer}>
+                                        <TextInput
+                                            ref={refPart1}
+                                            style={styles.input}
+                                            maxLength={1}
+                                            keyboardType="numeric"
+                                            value={codigoPart1}
+                                            onChangeText={(text) => {
+                                                setCodigoPart1(text);
+                                                if (text) refPart2.current.focus();
+                                            }}
+                                        />
+                                        <TextInput
+                                            ref={refPart2}
+                                            style={styles.input}
+                                            maxLength={1}
+                                            keyboardType="numeric"
+                                            value={codigoPart2}
+                                            onChangeText={(text) => {
+                                                setCodigoPart2(text);
+                                                if (text) refPart3.current.focus();
+                                            }}
+                                        />
+                                        <TextInput
+                                            ref={refPart3}
+                                            style={styles.input}
+                                            maxLength={1}
+                                            keyboardType="numeric"
+                                            value={codigoPart3}
+                                            onChangeText={(text) => {
+                                                setCodigoPart3(text);
+                                                if (text) refPart4.current.focus();
+                                            }}
+                                        />
+                                        <TextInput
+                                            ref={refPart4}
+                                            style={styles.input}
+                                            maxLength={1}
+                                            keyboardType="numeric"
+                                            value={codigoPart4}
+                                            onChangeText={(text) => {
+                                                setCodigoPart4(text);
+                                            }}
+                                        />
+                                    </View>
+                                    <TouchableOpacity
+                                        style={styles.modalButton}
+                                        onPress={handleSalvar} // A função que valida o código
+                                    >
+                                        <Text style={styles.modalButtonText}>Salvar</Text>
+                                    </TouchableOpacity>
+
+                                    {/* Exibir a mensagem de Código Correto ou Errado */}
+                                    {codigoValido !== null && (
+                                        <View style={styles.modalMessage}>
+                                            <Text style={styles.modalMessageText}>
+                                                {codigoValido ? 'Código Correto' : 'Código Errado'}
+                                            </Text>
+                                        </View>
+                                    )}
+                                </>
+                            )}
                         </View>
                     </View>
                 </Modal>
@@ -413,7 +614,7 @@ const styles = StyleSheet.create({
 
     },
     scrollContainer: {
-        paddingBottom: 70,
+        paddingBottom: 10,
     },
     CarregamentoEvento: {
         width: 100,
@@ -598,17 +799,65 @@ const styles = StyleSheet.create({
         alignItems: 'center', // Centraliza o botão verticalmente
         width: '100%',
         marginTop: 'auto',
-        height: 100,
-        top: 700, // Distância do fundo
-        position: 'absolute',
-        left: 25,
     },
     textoBotao: {
         color: '#000',
         fontSize: 14,
         fontFamily: 'Montserrat-Bold',
     },
+    ticketGarantido: {
+        backgroundColor: 'red',
+        maxHeight: 130,
+        justifyContent: 'center'
+    },
+    loadingContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+    },
+    loadingText: {
+        marginTop: 10,
+        color: '#fff',
+        fontSize: 18,
+    },
+    codeInputContainer: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginVertical: 20,
+    },
+    input: {
+        width: 50,
+        height: 50,
+        borderColor: 'gray',
+        borderWidth: 1,
+        borderRadius: 5,
+        textAlign: 'center',
+        fontSize: 18,
+        backgroundColor: '#fff',
+        color: '#000',
+    },
+    modalMessage: {
+        marginTop: 20,
+        padding: 10,
+        backgroundColor: '#fff',
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '80%',
+    },
+    modalMessageText: {
+        fontSize: 18,
+        color: '#333',
+        fontWeight: 'bold',
+    },
+    infoText: {
+        fontSize: 16,
+        color: '#fff',
+        marginBottom: 10,
+    },
 
 });
 
 export default EventoScreen;
+
